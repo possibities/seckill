@@ -18,6 +18,7 @@ type goodsReader interface {
 type stockOperator interface {
 	DecreaseStock(ctx context.Context, goodsID, userID int64) (cache.StockResult, error)
 	SetResult(ctx context.Context, userID, goodsID int64, result string, ttl time.Duration) error
+	GetResult(ctx context.Context, userID, goodsID int64) (string, error)
 }
 
 type tokenVerifier interface {
@@ -135,6 +136,24 @@ func (s *SeckillService) DoSeckill(ctx context.Context, userID, goodsID int64, u
 	}
 
 	return &model.QueueResp{QueueStatus: "queuing"}, nil
+}
+
+func (s *SeckillService) GetResult(ctx context.Context, userID, goodsID int64) (*model.SeckillResultResp, error) {
+	result, err := s.stockCache.GetResult(ctx, userID, goodsID)
+	if err != nil {
+		return nil, err
+	}
+
+	switch result {
+	case cache.ResultQueueing:
+		return &model.SeckillResultResp{Status: "queuing"}, nil
+	case cache.ResultSuccess:
+		return &model.SeckillResultResp{Status: "success"}, nil
+	case cache.ResultFailed:
+		return &model.SeckillResultResp{Status: "failed"}, nil
+	default:
+		return &model.SeckillResultResp{Status: "queuing"}, nil
+	}
 }
 
 func (s *SeckillService) isLocalSoldOut(goodsID int64) bool {

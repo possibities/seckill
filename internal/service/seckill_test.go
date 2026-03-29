@@ -28,6 +28,7 @@ type fakeStockCache struct {
 	decreaseErr    error
 	setResultCalls int
 	lastResult     string
+	getResult      string
 }
 
 func (f *fakeStockCache) DecreaseStock(ctx context.Context, goodsID, userID int64) (cache.StockResult, error) {
@@ -38,6 +39,10 @@ func (f *fakeStockCache) SetResult(ctx context.Context, userID, goodsID int64, r
 	f.setResultCalls++
 	f.lastResult = result
 	return nil
+}
+
+func (f *fakeStockCache) GetResult(ctx context.Context, userID, goodsID int64) (string, error) {
+	return f.getResult, nil
 }
 
 type fakeTokenCache struct {
@@ -141,5 +146,23 @@ func TestDoSeckillSuccess(t *testing.T) {
 	}
 	if stock.lastResult != cache.ResultQueueing {
 		t.Fatalf("expected queueing result, got: %s", stock.lastResult)
+	}
+}
+
+func TestGetResult(t *testing.T) {
+	stock := &fakeStockCache{getResult: cache.ResultSuccess}
+	svc, _ := NewSeckillService(
+		&fakeGoodsRepo{goods: &model.SeckillGoods{ID: 1}},
+		stock,
+		&fakeTokenCache{verifyOK: true},
+		&fakeProducer{},
+	)
+
+	resp, err := svc.GetResult(context.Background(), 1, 1)
+	if err != nil {
+		t.Fatalf("get result: %v", err)
+	}
+	if resp.Status != "success" {
+		t.Fatalf("unexpected status: %s", resp.Status)
 	}
 }
