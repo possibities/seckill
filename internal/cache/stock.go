@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -113,6 +114,36 @@ func (c *StockCache) GetResult(ctx context.Context, userID, goodsID int64) (stri
 		return "", err
 	}
 	return val, nil
+}
+
+func BuildResultValue(status string, orderID int64) string {
+	if status == ResultSuccess && orderID > 0 {
+		return fmt.Sprintf("%s:%d", ResultSuccess, orderID)
+	}
+	return status
+}
+
+func ParseResultValue(value string) (status string, orderID int64, err error) {
+	if value == "" {
+		return ResultQueueing, 0, nil
+	}
+	parts := strings.Split(value, ":")
+	if len(parts) == 1 {
+		switch parts[0] {
+		case ResultQueueing, ResultSuccess, ResultFailed:
+			return parts[0], 0, nil
+		default:
+			return "", 0, fmt.Errorf("unknown result status: %s", parts[0])
+		}
+	}
+	if len(parts) == 2 && parts[0] == ResultSuccess {
+		id, parseErr := strconv.ParseInt(parts[1], 10, 64)
+		if parseErr != nil {
+			return "", 0, fmt.Errorf("parse result order id: %w", parseErr)
+		}
+		return ResultSuccess, id, nil
+	}
+	return "", 0, fmt.Errorf("invalid result value: %s", value)
 }
 
 func parseScriptResult(v any) (StockResult, error) {

@@ -62,16 +62,20 @@ func (f *fakeIDGen) NextID() (int64, error) {
 }
 
 func TestHandleMessageDuplicateConsumed(t *testing.T) {
+	resultCache := &fakeResultCache{}
 	c := &Consumer{
 		orderRepo:  &fakeOrderRepo{},
 		goodsRepo:  &fakeGoodsRepo{},
-		stockCache: &fakeResultCache{},
+		stockCache: resultCache,
 		idGen:      &fakeIDGen{},
 		resultTTL:  time.Minute,
 	}
 	body := []byte(`{"user_id":1,"goods_id":2,"idempotent_key":"k1","created_at":1}`)
 	if err := c.handleMessage(context.Background(), body); err != nil {
 		t.Fatalf("handle message: %v", err)
+	}
+	if resultCache.lastResult != cache.BuildResultValue(cache.ResultSuccess, 1) {
+		t.Fatalf("unexpected result status: %s", resultCache.lastResult)
 	}
 }
 
@@ -93,7 +97,7 @@ func TestHandleMessageCreateSuccess(t *testing.T) {
 	if orderRepo.createdOrder == nil {
 		t.Fatal("order should be created")
 	}
-	if resultCache.lastResult != cache.ResultSuccess {
+	if resultCache.lastResult != cache.BuildResultValue(cache.ResultSuccess, 123) {
 		t.Fatalf("unexpected result status: %s", resultCache.lastResult)
 	}
 }
@@ -111,7 +115,7 @@ func TestHandleMessageSoldOut(t *testing.T) {
 	if err := c.handleMessage(context.Background(), body); err != nil {
 		t.Fatalf("sold out should not retry: %v", err)
 	}
-	if resultCache.lastResult != cache.ResultFailed {
+	if resultCache.lastResult != cache.BuildResultValue(cache.ResultFailed, 0) {
 		t.Fatalf("expected failed result, got: %s", resultCache.lastResult)
 	}
 }

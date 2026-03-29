@@ -46,9 +46,11 @@ func (f *fakeStockCache) GetResult(ctx context.Context, userID, goodsID int64) (
 }
 
 type fakeTokenCache struct {
-	verifyOK  bool
-	verifyErr error
-	setErr    error
+	verifyOK      bool
+	verifyErr     error
+	setErr        error
+	idempotentOK  bool
+	idempotentErr error
 }
 
 func (f *fakeTokenCache) SetURLToken(ctx context.Context, userID, goodsID int64, token string, ttl time.Duration) error {
@@ -57,6 +59,10 @@ func (f *fakeTokenCache) SetURLToken(ctx context.Context, userID, goodsID int64,
 
 func (f *fakeTokenCache) VerifyURLToken(ctx context.Context, userID, goodsID int64, token string) (bool, error) {
 	return f.verifyOK, f.verifyErr
+}
+
+func (f *fakeTokenCache) SetIdempotentToken(ctx context.Context, userID, goodsID int64, token string, ttl time.Duration) (bool, error) {
+	return f.idempotentOK, f.idempotentErr
 }
 
 type fakeProducer struct {
@@ -106,12 +112,26 @@ func TestDoSeckillInvalidToken(t *testing.T) {
 	}
 }
 
+func TestDoSeckillIdempotentRejected(t *testing.T) {
+	svc, _ := NewSeckillService(
+		&fakeGoodsRepo{goods: &model.SeckillGoods{ID: 1}},
+		&fakeStockCache{},
+		&fakeTokenCache{verifyOK: true, idempotentOK: false},
+		&fakeProducer{},
+	)
+
+	_, err := svc.DoSeckill(context.Background(), 1, 1, "dup")
+	if !errors.Is(err, pkg.ErrAlreadyBought) {
+		t.Fatalf("expected already bought error, got: %v", err)
+	}
+}
+
 func TestDoSeckillSoldOut(t *testing.T) {
 	stock := &fakeStockCache{decreaseResult: cache.StockNoInventory}
 	svc, _ := NewSeckillService(
 		&fakeGoodsRepo{goods: &model.SeckillGoods{ID: 1}},
 		stock,
-		&fakeTokenCache{verifyOK: true},
+		&fakeTokenCache{verifyOK: true, idempotentOK: true},
 		&fakeProducer{},
 	)
 
@@ -119,7 +139,7 @@ func TestDoSeckillSoldOut(t *testing.T) {
 	if !errors.Is(err, pkg.ErrSoldOut) {
 		t.Fatalf("expected sold out error, got: %v", err)
 	}
-	if stock.lastResult != cache.ResultFailed {
+	if stock.lastResult != cache.BuildResultValue(cache.ResultFailed, 0) {
 		t.Fatalf("expected failed result set, got: %s", stock.lastResult)
 	}
 }
@@ -130,7 +150,7 @@ func TestDoSeckillSuccess(t *testing.T) {
 	svc, _ := NewSeckillService(
 		&fakeGoodsRepo{goods: &model.SeckillGoods{ID: 1}},
 		stock,
-		&fakeTokenCache{verifyOK: true},
+		&fakeTokenCache{verifyOK: true, idempotentOK: true},
 		producer,
 	)
 
@@ -144,17 +164,17 @@ func TestDoSeckillSuccess(t *testing.T) {
 	if !producer.published {
 		t.Fatal("message should be published")
 	}
-	if stock.lastResult != cache.ResultQueueing {
+	if stock.lastResult != cache.BuildResultValue(cache.ResultQueueing, 0) {
 		t.Fatalf("expected queueing result, got: %s", stock.lastResult)
 	}
 }
 
 func TestGetResult(t *testing.T) {
-	stock := &fakeStockCache{getResult: cache.ResultSuccess}
+	stock := &fakeStockCache{getResult: cache.BuildResultValue(cache.ResultSuccess, 123)}
 	svc, _ := NewSeckillService(
 		&fakeGoodsRepo{goods: &model.SeckillGoods{ID: 1}},
 		stock,
-		&fakeTokenCache{verifyOK: true},
+		&fakeTokenCache{verifyOK: true, idempotentOK: true},
 		&fakeProducer{},
 	)
 
@@ -162,7 +182,7 @@ func TestGetResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get result: %v", err)
 	}
-	if resp.Status != "success" {
-		t.Fatalf("unexpected status: %s", resp.Status)
+	if resp.Status != "success" || resp.OrderID != 123 {
+		t.Fatalf("unexpected resp: %+v", resp)
 	}
 }

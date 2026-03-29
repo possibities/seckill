@@ -22,6 +22,25 @@ func TestParseScriptResult(t *testing.T) {
 	}
 }
 
+func TestResultValueCodec(t *testing.T) {
+	value := BuildResultValue(ResultSuccess, 100)
+	status, orderID, err := ParseResultValue(value)
+	if err != nil {
+		t.Fatalf("parse result value: %v", err)
+	}
+	if status != ResultSuccess || orderID != 100 {
+		t.Fatalf("unexpected decode result: status=%s orderID=%d", status, orderID)
+	}
+
+	status, orderID, err = ParseResultValue(ResultFailed)
+	if err != nil {
+		t.Fatalf("parse failed status: %v", err)
+	}
+	if status != ResultFailed || orderID != 0 {
+		t.Fatalf("unexpected decode result: status=%s orderID=%d", status, orderID)
+	}
+}
+
 func TestNewStockCache(t *testing.T) {
 	if _, err := NewStockCache(nil); err == nil {
 		t.Fatal("expected nil redis error")

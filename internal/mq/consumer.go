@@ -120,9 +120,9 @@ func (c *Consumer) handleMessage(ctx context.Context, body []byte) error {
 		return err
 	}
 
-	_, err := c.orderRepo.GetByIdempotentKey(ctx, payload.IdempotentKey)
+	order, err := c.orderRepo.GetByIdempotentKey(ctx, payload.IdempotentKey)
 	if err == nil {
-		_ = c.stockCache.SetResult(ctx, payload.UserID, payload.GoodsID, cache.ResultSuccess, c.resultTTL)
+		_ = c.stockCache.SetResult(ctx, payload.UserID, payload.GoodsID, cache.BuildResultValue(cache.ResultSuccess, order.ID), c.resultTTL)
 		return nil
 	}
 	if !errors.Is(err, pkg.ErrOrderNotFound) {
@@ -131,7 +131,7 @@ func (c *Consumer) handleMessage(ctx context.Context, body []byte) error {
 
 	goods, err := c.goodsRepo.GetByID(ctx, payload.GoodsID)
 	if err != nil {
-		_ = c.stockCache.SetResult(ctx, payload.UserID, payload.GoodsID, cache.ResultFailed, c.resultTTL)
+		_ = c.stockCache.SetResult(ctx, payload.UserID, payload.GoodsID, cache.BuildResultValue(cache.ResultFailed, 0), c.resultTTL)
 		if errors.Is(err, pkg.ErrGoodsNotFound) {
 			return nil
 		}
@@ -139,7 +139,7 @@ func (c *Consumer) handleMessage(ctx context.Context, body []byte) error {
 	}
 
 	if err = c.goodsRepo.DecreaseAvailableStock(ctx, payload.GoodsID); err != nil {
-		_ = c.stockCache.SetResult(ctx, payload.UserID, payload.GoodsID, cache.ResultFailed, c.resultTTL)
+		_ = c.stockCache.SetResult(ctx, payload.UserID, payload.GoodsID, cache.BuildResultValue(cache.ResultFailed, 0), c.resultTTL)
 		if errors.Is(err, pkg.ErrSoldOut) {
 			return nil
 		}
@@ -151,7 +151,7 @@ func (c *Consumer) handleMessage(ctx context.Context, body []byte) error {
 		return err
 	}
 
-	order := &model.SeckillOrder{
+	newOrder := &model.SeckillOrder{
 		ID:            orderID,
 		UserID:        payload.UserID,
 		GoodsID:       payload.GoodsID,
@@ -160,15 +160,20 @@ func (c *Consumer) handleMessage(ctx context.Context, body []byte) error {
 		IdempotentKey: payload.IdempotentKey,
 		PayExpireAt:   time.Now().Add(c.payTTL),
 	}
-	if err = c.orderRepo.Create(ctx, order); err != nil {
+	if err = c.orderRepo.Create(ctx, newOrder); err != nil {
 		if isDuplicateError(err) {
-			_ = c.stockCache.SetResult(ctx, payload.UserID, payload.GoodsID, cache.ResultSuccess, c.resultTTL)
+			dupOrder, getErr := c.orderRepo.GetByIdempotentKey(ctx, payload.IdempotentKey)
+			if getErr == nil {
+				_ = c.stockCache.SetResult(ctx, payload.UserID, payload.GoodsID, cache.BuildResultValue(cache.ResultSuccess, dupOrder.ID), c.resultTTL)
+				return nil
+			}
+			_ = c.stockCache.SetResult(ctx, payload.UserID, payload.GoodsID, cache.BuildResultValue(cache.ResultSuccess, 0), c.resultTTL)
 			return nil
 		}
 		return err
 	}
 
-	return c.stockCache.SetResult(ctx, payload.UserID, payload.GoodsID, cache.ResultSuccess, c.resultTTL)
+	return c.stockCache.SetResult(ctx, payload.UserID, payload.GoodsID, cache.BuildResultValue(cache.ResultSuccess, orderID), c.resultTTL)
 }
 
 func isDuplicateError(err error) bool {

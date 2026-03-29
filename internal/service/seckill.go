@@ -24,6 +24,7 @@ type stockOperator interface {
 type tokenVerifier interface {
 	SetURLToken(ctx context.Context, userID, goodsID int64, token string, ttl time.Duration) error
 	VerifyURLToken(ctx context.Context, userID, goodsID int64, token string) (bool, error)
+	SetIdempotentToken(ctx context.Context, userID, goodsID int64, token string, ttl time.Duration) (bool, error)
 }
 
 type orderMessageProducer interface {
@@ -38,13 +39,14 @@ type SeckillOrderMessage struct {
 }
 
 type SeckillService struct {
-	goodsRepo    goodsReader
-	stockCache   stockOperator
-	tokenCache   tokenVerifier
-	producer     orderMessageProducer
-	queueTTL     time.Duration
-	urlTokenTTL  time.Duration
-	soldOutFlags sync.Map
+	goodsRepo     goodsReader
+	stockCache    stockOperator
+	tokenCache    tokenVerifier
+	producer      orderMessageProducer
+	queueTTL      time.Duration
+	urlTokenTTL   time.Duration
+	idempotentTTL time.Duration
+	soldOutFlags  sync.Map
 }
 
 func NewSeckillService(
@@ -57,12 +59,13 @@ func NewSeckillService(
 		return nil, fmt.Errorf("service dependencies must not be nil")
 	}
 	return &SeckillService{
-		goodsRepo:   goodsRepo,
-		stockCache:  stockCache,
-		tokenCache:  tokenCache,
-		producer:    producer,
-		queueTTL:    10 * time.Minute,
-		urlTokenTTL: 5 * time.Minute,
+		goodsRepo:     goodsRepo,
+		stockCache:    stockCache,
+		tokenCache:    tokenCache,
+		producer:      producer,
+		queueTTL:      10 * time.Minute,
+		urlTokenTTL:   5 * time.Minute,
+		idempotentTTL: 5 * time.Minute,
 	}, nil
 }
 
@@ -92,6 +95,14 @@ func (s *SeckillService) DoSeckill(ctx context.Context, userID, goodsID int64, u
 		return nil, pkg.ErrInvalidToken
 	}
 
+	idempotentOK, err := s.tokenCache.SetIdempotentToken(ctx, userID, goodsID, urlToken, s.idempotentTTL)
+	if err != nil {
+		return nil, err
+	}
+	if !idempotentOK {
+		return nil, pkg.ErrAlreadyBought
+	}
+
 	if s.isLocalSoldOut(goodsID) {
 		return nil, pkg.ErrSoldOut
 	}
@@ -104,10 +115,10 @@ func (s *SeckillService) DoSeckill(ctx context.Context, userID, goodsID int64, u
 	switch result {
 	case cache.StockNoInventory:
 		s.markLocalSoldOut(goodsID)
-		_ = s.stockCache.SetResult(ctx, userID, goodsID, cache.ResultFailed, s.queueTTL)
+		_ = s.stockCache.SetResult(ctx, userID, goodsID, cache.BuildResultValue(cache.ResultFailed, 0), s.queueTTL)
 		return nil, pkg.ErrSoldOut
 	case cache.StockAlreadyBought:
-		_ = s.stockCache.SetResult(ctx, userID, goodsID, cache.ResultFailed, s.queueTTL)
+		_ = s.stockCache.SetResult(ctx, userID, goodsID, cache.BuildResultValue(cache.ResultFailed, 0), s.queueTTL)
 		return nil, pkg.ErrAlreadyBought
 	case cache.StockSuccess:
 		// continue
@@ -127,11 +138,11 @@ func (s *SeckillService) DoSeckill(ctx context.Context, userID, goodsID int64, u
 		CreatedAt:     time.Now(),
 	}
 	if err = s.producer.PublishSeckillOrder(ctx, msg); err != nil {
-		_ = s.stockCache.SetResult(ctx, userID, goodsID, cache.ResultFailed, s.queueTTL)
+		_ = s.stockCache.SetResult(ctx, userID, goodsID, cache.BuildResultValue(cache.ResultFailed, 0), s.queueTTL)
 		return nil, err
 	}
 
-	if err = s.stockCache.SetResult(ctx, userID, goodsID, cache.ResultQueueing, s.queueTTL); err != nil {
+	if err = s.stockCache.SetResult(ctx, userID, goodsID, cache.BuildResultValue(cache.ResultQueueing, 0), s.queueTTL); err != nil {
 		return nil, err
 	}
 
@@ -144,11 +155,16 @@ func (s *SeckillService) GetResult(ctx context.Context, userID, goodsID int64) (
 		return nil, err
 	}
 
-	switch result {
+	status, orderID, err := cache.ParseResultValue(result)
+	if err != nil {
+		return nil, err
+	}
+
+	switch status {
 	case cache.ResultQueueing:
 		return &model.SeckillResultResp{Status: "queuing"}, nil
 	case cache.ResultSuccess:
-		return &model.SeckillResultResp{Status: "success"}, nil
+		return &model.SeckillResultResp{Status: "success", OrderID: orderID}, nil
 	case cache.ResultFailed:
 		return &model.SeckillResultResp{Status: "failed"}, nil
 	default:
