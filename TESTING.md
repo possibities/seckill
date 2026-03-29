@@ -1,4 +1,4 @@
-# Seckill 项目测试流程（新手可直接照做）
+﻿# Seckill 项目测试流程（新手可直接照做）
 
 你不需要会写测试代码，按下面命令执行并看结果即可。
 
@@ -63,7 +63,23 @@ go run ./cmd/server
 - 成功监听端口（例如 `:8080`）表示启动正常
 - 启动报错则先检查 `config/config.yaml`、MySQL、Redis、RocketMQ 是否可用
 
-## 9. 你每次更新后只需要执行这 2 条
+## 9. MQ 阶段联调检查（第 8 步后可用）
+
+先跑单元测试（不依赖真实 MQ）：
+
+```powershell
+go test ./internal/mq -v
+```
+
+再做服务联调（依赖本地 RocketMQ）：
+
+1. 启动 NameServer 和 Broker
+2. 启动项目服务（后续 main.go 完成后）
+3. 执行一次秒杀请求，观察日志是否出现“消息入队”和“消费创建订单”
+4. 查询 `seckill_order` 表确认订单创建
+5. 查询 Redis `sk:result:{userId}:{goodsId}` 确认状态为成功
+
+## 10. 你每次更新后只需要执行这 2 条
 
 ```powershell
 go test ./...
